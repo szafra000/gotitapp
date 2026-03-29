@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Got It!</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        * { 
+            -webkit-user-select: none; 
+            user-select: none; 
+            -webkit-touch-callout: none; 
+            -webkit-tap-highlight-color: transparent;
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: -apple-system, sans-serif; 
+            background: #0f172a; 
+            color: white; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            height: 100vh; 
+            margin: 0; 
+            overflow: hidden; 
+        }
+
+        .logo { font-size: 1.5rem; font-weight: 800; color: #4ade80; margin-bottom: 2rem; }
+        
+        .slider-container { width: 80%; max-width: 300px; margin-bottom: 2rem; text-align: center; }
+        input[type=range] { width: 100%; height: 12px; border-radius: 6px; background: #334155; -webkit-appearance: none; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 28px; height: 28px; border-radius: 50%; background: #4ade80; border: 4px solid #0f172a; }
+        
+        .big-button { 
+            width: 220px; height: 220px; border-radius: 50%; border: none; 
+            background: #22c55e; color: white; font-size: 2.5rem; font-weight: 900; 
+            cursor: pointer; outline: none; 
+            box-shadow: 0 15px 40px rgba(34, 197, 94, 0.3);
+            transition: transform 0.1s;
+        }
+        .big-button:active { transform: scale(0.96); }
+        .recording { animation: pulse 1s infinite; background: #ef4444 !important; }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0px rgba(239, 68, 68, 0.7); } 100% { box-shadow: 0 0 0 40px rgba(239, 68, 68, 0); } }
+        
+        #status { font-size: 1.1rem; margin-top: 2.5rem; color: #94a3b8; text-align: center; min-height: 4em; padding: 0 30px; line-height: 1.4; }
+        #timerDisplay { margin-top: 1rem; font-size: 3rem; font-weight: 900; color: #fbbf24; }
+
+        /* ALARM OVERLAY — urgent, hard to miss */
+        #alarmOverlay {
+            display: none;
+            position: fixed; inset: 0;
+            background: #ef4444;
+            z-index: 999;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            animation: flashRed 0.5s infinite alternate;
+        }
+        #alarmOverlay.active { display: flex; }
+        @keyframes flashRed {
+            from { background: #ef4444; }
+            to   { background: #7f1d1d; }
+        }
+        #alarmOverlay h1 { font-size: 3rem; font-weight: 900; margin: 0 0 1rem; text-align: center; padding: 0 20px; }
+        #alarmOverlay p  { font-size: 1.5rem; color: #fecaca; margin: 0 0 2.5rem; text-align: center; padding: 0 20px; }
+        #gotItBtn {
+            background: white; color: #ef4444; border: none;
+            font-size: 1.8rem; font-weight: 900; padding: 20px 50px;
+            border-radius: 16px; cursor: pointer;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="logo">GOT IT!</div>
+
+    <div class="slider-container">
+        <label>Alert in <span id="timeVal">5</span> mins</label><br><br>
+        <input type="range" id="timeSlider" min="0.1" max="10" step="0.1" value="5">
+    </div>
+    
+    <button id="mainButton" class="big-button">GO</button>
+    
+    <div id="status">TAP GO TO ENABLE ALERTS<br><small>Then Hold GO to Record</small></div>
+    <div id="timerDisplay"></div>
+
+    <!-- Full-screen alarm overlay — much harder to ignore than confirm() -->
+    <div id="alarmOverlay">
+        <h1>🚨 TIME'S UP! 🚨</h1>
+        <p id="alarmItem">GRAB YOUR ITEM!</p>
+        <button id="gotItBtn">✅ GOT IT!</button>
+    </div>
+
+    <script>
+        const btn         = document.getElementById('mainButton');
+        const status      = document.getElementById('status');
+        const timerDisplay= document.getElementById('timerDisplay');
+        const slider      = document.getElementById('timeSlider');
+        const tv          = document.getElementById('timeVal');
+        const overlay     = document.getElementById('alarmOverlay');
+        const alarmItem   = document.getElementById('alarmItem');
+        const gotItBtn    = document.getElementById('gotItBtn');
+
+        // --- Audio: create on first user gesture to satisfy autoplay policy ---
+        let audioCtx = null;
+        function unlockAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        // Web Audio siren — no external URL needed, always works
+        let sirenNodes = [];
+        function startSiren() {
+            if (!audioCtx) return;
+            stopSiren();
+            // Alternating two-tone siren
+            const beepPattern = [880, 660];
+            let i = 0;
+            function beep() {
+                const osc  = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.frequency.value = beepPattern[i % 2];
+                osc.type = 'square';
+                gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+                sirenNodes.push(osc);
+                i++;
+            }
+            beep();
+            sirenInterval = setInterval(beep, 500);
+        }
+        function stopSiren() {
+            if (sirenInterval) { clearInterval(sirenInterval); sirenInterval = null; }
+            sirenNodes.forEach(n => { try { n.stop(); } catch(e) {} });
+            sirenNodes = [];
+        }
+        let sirenInterval = null;
+
+        // --- Slider ---
+        slider.oninput = () => { tv.innerText = slider.value; };
+
+        // --- Service Worker ---
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+
+        // Listen for SW messages (e.g. notification clicked while app is open)
+        navigator.serviceWorker.addEventListener('message', (e) => {
+            if (e.data && e.data.type === 'NOTIFICATION_CLICKED') {
+                triggerAlarm(e.data.item);
+            }
+        });
+
+        // --- Speech Recognition: recreated each time to avoid stale state ---
+        let recognition = null;
+        let isRecording  = false;
+        let holdTimer    = null;
+
+        function createRecognition() {
+            const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Speech) { status.innerText = "MIC NOT SUPPORTED"; return null; }
+            const r = new Speech();
+            r.continuous    = false;
+            r.interimResults = false;
+            r.lang          = 'en-US';
+
+            r.onresult = (e) => {
+                const transcript = e.results[0][0].transcript;
+                confirmAndStart(transcript);
+            };
+
+            r.onerror = (e) => {
+                console.warn('Speech error:', e.error);
+                // 'no-speech' is common — treat as empty, not a hard error
+                if (e.error === 'not-allowed') {
+                    status.innerText = "🚫 MIC BLOCKED — check browser settings";
+                } else {
+                    status.innerText = "Didn't catch that. Try again.";
+                }
+                btn.classList.remove('recording');
+                isRecording = false;
+            };
+
+            r.onend = () => {
+                // Only clean up if we didn't already handle onresult
+                if (isRecording) {
+                    btn.classList.remove('recording');
+                    isRecording = false;
+                    // If nothing was heard, fall back to manual prompt
+                    if (status.innerText === 'LISTENING...') {
+                        const manual = prompt("Didn't hear anything — what are you grabbing?");
+                        if (manual) confirmAndStart(manual);
+                        else status.innerHTML = "Hold GO to Record";
+                    }
+                }
+            };
+
+            return r;
+        }
+
+        // --- Button interactions ---
+        btn.onpointerdown = async (e) => {
+            e.preventDefault();
+            unlockAudio(); // must happen in user gesture
+
+            if (Notification.permission !== 'granted') {
+                const perm = await Notification.requestPermission();
+                if (perm === 'granted') {
+                    status.innerHTML = "✅ ALERTS READY.<br>Hold GO to Record.";
+                } else {
+                    status.innerHTML = "⚠️ Notifications blocked.<br>App will still alarm on screen.";
+                }
+                return;
+            }
+
+            holdTimer = setTimeout(() => {
+                isRecording = true;
+                btn.classList.add('recording');
+                status.innerText = 'LISTENING...';
+                recognition = createRecognition(); // fresh instance every time
+                if (recognition) {
+                    try { recognition.start(); } catch(err) { console.warn(err); }
+                }
+            }, 500);
+        };
+
+        btn.onpointerup = (e) => {
+            clearTimeout(holdTimer);
+            if (isRecording) {
+                isRecording = false;
+                btn.classList.remove('recording');
+                if (recognition) {
+                    try { recognition.stop(); } catch(err) {}
+                    recognition = null;
+                }
+            } else if (Notification.permission === 'granted' || true) {
+                // Quick tap = manual entry (works even without notification permission)
+                const manual = prompt("What are you grabbing?");
+                if (manual) confirmAndStart(manual);
+            }
+        };
+
+        // --- Scheduling ---
+        function confirmAndStart(item) {
+            item = item.trim();
+            if (!item) return;
+            status.innerHTML = `⏳ REMINDING: <strong>${item.toUpperCase()}</strong>`;
+            const ms = Math.round(parseFloat(slider.value) * 60 * 1000);
+
+            // Tell SW to send a push notification as backup
+            if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE', delay: ms, item });
+            }
+
+            startCountdown(item, ms / 1000);
+        }
+
+        function startCountdown(item, seconds) {
+            // Clear any existing countdown
+            if (window._countdownInterval) clearInterval(window._countdownInterval);
+
+            window._countdownInterval = setInterval(() => {
+                seconds--;
+                if (seconds <= 0) {
+                    clearInterval(window._countdownInterval);
+                    timerDisplay.innerText = '';
+                    triggerAlarm(item);
+                } else {
+                    const m = Math.floor(seconds / 60);
+                    const s = Math.round(seconds % 60);
+                    timerDisplay.innerText = `${m}:${s < 10 ? '0' : ''}${s}`;
+                }
+            }, 1000);
+        }
+
+        // --- Full-screen alarm (much harder to ignore than confirm()) ---
+        function triggerAlarm(item) {
+            alarmItem.innerText = `GRAB YOUR ${item.toUpperCase()}!`;
+            overlay.classList.add('active');
+            startSiren();
+            // Vibrate in urgent pattern if supported
+            if (navigator.vibrate) {
+                navigator.vibrate([500, 200, 500, 200, 500, 200, 1000]);
+            }
+        }
+
+        gotItBtn.onclick = () => {
+            overlay.classList.remove('active');
+            stopSiren();
+            status.innerHTML = "TAP GO TO ENABLE ALERTS<br><small>Then Hold GO to Record</small>";
+            timerDisplay.innerText = '';
+        };
+    </script>
+</body>
+</html>
