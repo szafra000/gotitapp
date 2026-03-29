@@ -1,44 +1,443 @@
-self.addEventListener('install', (e) => self.skipWaiting());
-self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Got It!</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        * {
+            box-sizing: border-box;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
+            margin: 0; padding: 0;
+        }
 
-let nagInterval = null;
+        body {
+            font-family: -apple-system, sans-serif;
+            background: #0f172a;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            gap: 0;
+        }
 
-self.onmessage = (event) => {
-    if (event.data.type === 'SCHEDULE_URGENT') {
-        const { item, delay } = event.data;
-        
-        setTimeout(() => {
-            // FIRE INITIAL ALERT
-            fireNag(item);
+        /* ── SLIDER ── */
+        .slider-wrap {
+            position: absolute;
+            top: 36px;
+            text-align: center;
+            width: 80%;
+            max-width: 300px;
+        }
+        .slider-label {
+            font-size: 0.9rem;
+            color: #64748b;
+            margin-bottom: 10px;
+            display: block;
+        }
+        .slider-label span { color: #4ade80; font-weight: 700; }
+        input[type=range] {
+            width: 100%; height: 6px;
+            border-radius: 6px; background: #1e293b;
+            -webkit-appearance: none; outline: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 26px; height: 26px;
+            border-radius: 50%; background: #4ade80;
+            border: 3px solid #0f172a;
+        }
 
-            // START NAGGING LOOP: Every 20 seconds until clicked
-            nagInterval = setInterval(() => {
-                fireNag(item);
-            }, 20000); 
+        /* ── CENTER STACK ── */
+        .center {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+        }
 
-        }, delay);
-    }
-};
+        #status {
+            font-size: 1rem;
+            color: #64748b;
+            text-align: center;
+            min-height: 1.4em;
+            padding: 0 20px;
+            transition: color 0.2s;
+        }
+        #status.active  { color: #fbbf24; }
+        #status.success { color: #4ade80; }
 
-function fireNag(item) {
-    self.registration.showNotification("🚨🚨 URGENT: GOT IT? 🚨🚨", {
-        body: `GRAB YOUR ${item.toUpperCase()} NOW!`,
-        tag: 'urgent-nag',
-        renotify: true,
-        vibrate: [500, 110, 500, 110, 450, 110], 
-        requireInteraction: true // Keeps alert on screen
-    });
-}
+        /* ── BIG MIC BUTTON ── */
+        #micButton {
+            width: 200px; height: 200px;
+            border-radius: 50%; border: none;
+            background: #22c55e;
+            color: white;
+            cursor: pointer;
+            outline: none;
+            -webkit-appearance: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: transform 0.15s, background 0.2s;
+            box-shadow: 0 12px 40px rgba(34,197,94,0.3);
+        }
+        #micButton .icon  { font-size: 3.2rem; line-height: 1; }
+        #micButton .label { font-size: 0.8rem; font-weight: 800; letter-spacing: 0.1em; opacity: 0.9; }
 
-self.addEventListener('notificationclick', (e) => {
-    // STOP THE NAG LOOP
-    if (nagInterval) clearInterval(nagInterval);
-    
-    e.notification.close();
-    e.waitUntil(
-        clients.matchAll({ type: 'window' }).then((clientList) => {
-            if (clientList.length > 0) return clientList[0].focus();
-            return clients.openWindow('/');
-        })
-    );
-});
+        #micButton:active { transform: scale(0.95); }
+        #micButton.listening {
+            background: #ef4444;
+            box-shadow: 0 12px 40px rgba(239,68,68,0.4);
+            animation: pulse 1.2s ease-out infinite;
+        }
+        #micButton.confirmed { background: #4ade80; }
+
+        @keyframes pulse {
+            0%  { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+            70% { box-shadow: 0 0 0 36px rgba(239,68,68,0); }
+            100%{ box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+        }
+
+        /* ── COUNTDOWN ── */
+        #countdown {
+            font-size: 3.5rem;
+            font-weight: 900;
+            color: #fbbf24;
+            min-height: 1.2em;
+            text-align: center;
+            letter-spacing: -0.02em;
+        }
+
+        /* ── TYPE LINK ── */
+        #typeLink {
+            font-size: 0.95rem;
+            color: #475569;
+            cursor: pointer;
+            border: none;
+            background: none;
+            -webkit-appearance: none;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+            padding: 4px 8px;
+        }
+        #typeLink:active { color: #94a3b8; }
+
+        /* ── ALARM OVERLAY ── */
+        #alarmOverlay {
+            display: none;
+            position: fixed; inset: 0;
+            z-index: 999;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #ef4444;
+            animation: flash 0.6s infinite alternate;
+        }
+        #alarmOverlay.active { display: flex; }
+        @keyframes flash { from { background: #ef4444; } to { background: #7f1d1d; } }
+        #alarmOverlay h1 {
+            font-size: 2.8rem; font-weight: 900;
+            text-align: center; padding: 0 20px;
+            margin-bottom: 10px;
+        }
+        #alarmOverlay p {
+            font-size: 1.6rem; color: #fecaca;
+            text-align: center; padding: 0 20px;
+            margin-bottom: 40px;
+        }
+        #gotItBtn {
+            background: white; color: #ef4444;
+            border: none; border-radius: 20px;
+            font-size: 2rem; font-weight: 900;
+            padding: 22px 55px; cursor: pointer;
+            -webkit-appearance: none;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+        }
+
+        /* ── TYPE OVERLAY ── */
+        #typeOverlay {
+            display: none;
+            position: fixed; inset: 0;
+            z-index: 998;
+            background: rgba(0,0,0,0.92);
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 30px;
+            gap: 14px;
+        }
+        #typeOverlay.active { display: flex; }
+        #typeOverlay .type-hint {
+            font-size: 1.1rem; color: #94a3b8;
+            text-align: center; margin-bottom: 4px;
+        }
+        #typeInput {
+            width: 100%; max-width: 340px;
+            font-size: 1.5rem; font-weight: 600;
+            padding: 18px 22px;
+            border-radius: 16px;
+            border: 3px solid #4ade80;
+            background: #1e293b;
+            color: white; outline: none;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        #typeInput::placeholder { color: #475569; font-weight: 400; }
+        #typeSubmit {
+            width: 100%; max-width: 340px;
+            background: #22c55e; color: white;
+            border: none; border-radius: 16px;
+            font-size: 1.3rem; font-weight: 900;
+            padding: 18px; cursor: pointer;
+            -webkit-appearance: none;
+        }
+        #typeCancel {
+            background: none; border: none;
+            color: #475569; font-size: 0.95rem;
+            cursor: pointer; -webkit-appearance: none;
+            padding: 6px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="slider-wrap">
+        <span class="slider-label">Remind me in <span id="timeVal">5</span> min</span>
+        <input type="range" id="timeSlider" min="0.5" max="10" step="0.5" value="5">
+    </div>
+
+    <div class="center">
+        <div id="status">TAP TO REMEMBER SOMETHING</div>
+
+        <button id="micButton">
+            <span class="icon">🎤</span>
+            <span class="label">TAP &amp; SPEAK</span>
+        </button>
+
+        <div id="countdown"></div>
+        <button id="typeLink">or type it instead</button>
+    </div>
+
+    <div id="alarmOverlay">
+        <h1>🚨 DON'T FORGET!</h1>
+        <p id="alarmItem">YOUR ITEM</p>
+        <button id="gotItBtn">✅ GOT IT!</button>
+    </div>
+
+    <div id="typeOverlay">
+        <p class="type-hint">What do you need to grab?</p>
+        <input type="text" id="typeInput" placeholder="keys, wallet, lunch…"
+               autocomplete="off" autocorrect="off" autocapitalize="words">
+        <button id="typeSubmit">SET REMINDER →</button>
+        <button id="typeCancel">Cancel</button>
+    </div>
+
+    <script>
+        const micBtn     = document.getElementById('micButton');
+        const statusEl   = document.getElementById('status');
+        const countdown  = document.getElementById('countdown');
+        const slider     = document.getElementById('timeSlider');
+        const timeVal    = document.getElementById('timeVal');
+        const typeLink   = document.getElementById('typeLink');
+        const alarm      = document.getElementById('alarmOverlay');
+        const alarmItem  = document.getElementById('alarmItem');
+        const gotItBtn   = document.getElementById('gotItBtn');
+        const typeOverlay= document.getElementById('typeOverlay');
+        const typeInput  = document.getElementById('typeInput');
+        const typeSubmit = document.getElementById('typeSubmit');
+        const typeCancel = document.getElementById('typeCancel');
+
+        slider.oninput = () => { timeVal.innerText = slider.value; };
+
+        let audioCtx = null;
+        function unlockAudio() {
+            if (audioCtx) return;
+            try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+        }
+        let sirenTimer = null, sirenNodes = [];
+        function startSiren() {
+            if (!audioCtx) return;
+            stopSiren();
+            const freqs = [880, 660]; let i = 0;
+            function beep() {
+                try {
+                    const o = audioCtx.createOscillator();
+                    const g = audioCtx.createGain();
+                    o.connect(g); g.connect(audioCtx.destination);
+                    o.frequency.value = freqs[i++ % 2]; o.type = 'square';
+                    g.gain.setValueAtTime(0.4, audioCtx.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+                    o.start(); o.stop(audioCtx.currentTime + 0.45);
+                    sirenNodes.push(o);
+                } catch(e) {}
+            }
+            beep(); sirenTimer = setInterval(beep, 500);
+        }
+        function stopSiren() {
+            if (sirenTimer) { clearInterval(sirenTimer); sirenTimer = null; }
+            sirenNodes.forEach(n => { try { n.stop(); } catch(e) {} });
+            sirenNodes = [];
+        }
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(e => console.warn(e));
+        }
+
+        async function ensurePermission() {
+            if (Notification.permission === 'default') {
+                await Notification.requestPermission();
+            }
+        }
+
+        let recognition = null;
+        let isListening = false;
+
+        function startMic() {
+            const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Speech) {
+                openTypeOverlay("Type what you need to grab:");
+                return;
+            }
+
+            recognition = new Speech();
+            recognition.continuous     = false;
+            recognition.interimResults = false;
+            recognition.lang           = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                micBtn.classList.add('listening');
+                micBtn.querySelector('.icon').innerText  = '⏹';
+                micBtn.querySelector('.label').innerText = 'TAP TO STOP';
+                statusEl.innerText = 'LISTENING...';
+                statusEl.className = 'active';
+            };
+
+            recognition.onresult = (e) => {
+                const heard = e.results[0][0].transcript.trim();
+                stopMic();
+                scheduleReminder(heard);
+            };
+
+            recognition.onerror = (e) => {
+                stopMic();
+                openTypeOverlay("Mic error—type what you need:");
+            };
+
+            recognition.onend = () => { if (isListening) stopMic(); };
+
+            try { recognition.start(); } catch(err) { stopMic(); openTypeOverlay("What do you need to grab?"); }
+        }
+
+        function stopMic() {
+            isListening = false;
+            micBtn.classList.remove('listening');
+            micBtn.querySelector('.icon').innerText  = '🎤';
+            micBtn.querySelector('.label').innerText = 'TAP & SPEAK';
+            if (recognition) { try { recognition.stop(); } catch(e) {} recognition = null; }
+        }
+
+        // FORCE MIC ON POINTERDOWN
+        micBtn.addEventListener('pointerdown', async (e) => {
+            e.preventDefault();
+            unlockAudio();
+            await ensurePermission();
+            if (isListening) {
+                stopMic();
+            } else {
+                startMic();
+            }
+        });
+
+        typeLink.addEventListener('pointerup', async (e) => {
+            e.preventDefault();
+            unlockAudio();
+            await ensurePermission();
+            openTypeOverlay("What do you need to grab?");
+        });
+
+        function openTypeOverlay(hint) {
+            typeOverlay.querySelector('.type-hint').innerText = hint;
+            typeInput.value = '';
+            typeOverlay.classList.add('active');
+            setTimeout(() => typeInput.focus(), 150);
+        }
+
+        typeSubmit.addEventListener('pointerup', () => {
+            const val = typeInput.value.trim();
+            typeOverlay.classList.remove('active');
+            if (val) scheduleReminder(val);
+        });
+
+        typeCancel.addEventListener('pointerup', () => { typeOverlay.classList.remove('active'); });
+
+        typeInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') typeSubmit.dispatchEvent(new Event('pointerup'));
+        });
+
+        function scheduleReminder(item) {
+            const ms = Math.round(parseFloat(slider.value) * 60 * 1000);
+            micBtn.classList.add('confirmed');
+            micBtn.querySelector('.icon').innerText  = '✅';
+            micBtn.querySelector('.label').innerText = 'SET!';
+            setTimeout(() => {
+                micBtn.classList.remove('confirmed');
+                micBtn.querySelector('.icon').innerText  = '🎤';
+                micBtn.querySelector('.label').innerText = 'TAP & SPEAK';
+            }, 1500);
+
+            statusEl.innerHTML = `Reminding: <strong>${item.toUpperCase()}</strong>`;
+            statusEl.className = 'success';
+
+            // TRIGGER URGENT NAG LOOP
+            if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_URGENT', delay: ms, item });
+            }
+
+            startCountdown(item, ms / 1000);
+        }
+
+        let countdownInterval = null;
+        function startCountdown(item, seconds) {
+            if (countdownInterval) clearInterval(countdownInterval);
+            countdownInterval = setInterval(() => {
+                seconds--;
+                if (seconds <= 0) {
+                    clearInterval(countdownInterval);
+                    countdown.innerText = '';
+                    triggerAlarm(item);
+                } else {
+                    const m = Math.floor(seconds / 60);
+                    const s = Math.round(seconds % 60);
+                    countdown.innerText = `${m}:${s < 10 ? '0' : ''}${s}`;
+                }
+            }, 1000);
+        }
+
+        function triggerAlarm(item) {
+            alarmItem.innerText = item.toUpperCase();
+            alarm.classList.add('active');
+            startSiren();
+            if (navigator.vibrate) navigator.vibrate([500,200,500,200,500]);
+        }
+
+        gotItBtn.addEventListener('pointerup', () => {
+            alarm.classList.remove('active');
+            stopSiren();
+            statusEl.innerText = 'TAP TO REMEMBER SOMETHING';
+            statusEl.className = '';
+            countdown.innerText = '';
+        });
+    </script>
+</body>
+</html>
